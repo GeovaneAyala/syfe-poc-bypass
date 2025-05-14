@@ -1,5 +1,8 @@
 # syfe-poc-bypass
 
+🤖 Aviso legal
+O uso indevido deste script fora de ambientes autorizados pode violar leis e regulamentos. O autor não se responsabiliza por usos fora dos termos dos programas de bug bounty.
+
 > Proof-of-Concept para exploração remota na plataforma [Syfe](https://www.syfe.com), com foco em redirecionamento controlado via OneLink (AppsFlyer), coleta furtiva de dados e possível bypass de CSP.
 
 ---
